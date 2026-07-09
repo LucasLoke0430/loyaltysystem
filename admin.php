@@ -318,7 +318,6 @@ if (empty($_SESSION['admin_logged_in'])):
       <button data-page="dashboard" class="active" onclick="switchPage('dashboard'); toggleMenu();"><span class="ic">📊</span><span>總覽儀表板</span></button>
       <button data-page="members" onclick="switchPage('members'); toggleMenu();"><span class="ic">👥</span><span>會員列表</span></button>
       <button data-page="tasks" onclick="switchPage('tasks'); toggleMenu();"><span class="ic">📌</span><span>任務審核</span></button>
-      <button data-page="receipts" onclick="switchPage('receipts'); toggleMenu();"><span class="ic">🧾</span><span>審核消費收據</span></button>
       <button data-page="vouchers" onclick="switchPage('vouchers'); toggleMenu();"><span class="ic">🏷️</span><span>發出卡券記錄</span></button>
       <button data-page="rewards" onclick="switchPage('rewards'); toggleMenu();"><span class="ic">🎁</span><span>獎賞與轉盤設定</span></button>
       <button data-page="staff" onclick="switchPage('staff'); toggleMenu();"><span class="ic">💼</span><span>店員管理</span></button>
@@ -428,18 +427,42 @@ if (empty($_SESSION['admin_logged_in'])):
           <!-- Dynamically populated tasks config rows -->
         </div>
         
-        <form id="addTaskConfigForm" class="add-row-form" onsubmit="addTaskConfig(event)">
-          <input type="text" id="addTaskName" placeholder="任務名稱" style="flex: 1;" required>
-          <input type="text" id="addTaskDesc" placeholder="任務說明" style="flex: 2;" required>
-          <select id="addTaskType" style="width: 100px;">
-            <option value="points">積分</option>
-            <option value="stamps">印花</option>
-          </select>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 13px; color: var(--ink-soft);">獎勵</span>
-            <input type="number" id="addTaskReward" placeholder="數量" style="width: 80px;" required>
+        <form id="addTaskConfigForm" class="add-row-form" onsubmit="addTaskConfig(event)" style="display: flex; flex-direction: column; align-items: stretch; gap: 12px;">
+          <div style="display: flex; gap: 12px; flex-wrap: wrap; width: 100%;">
+            <input type="text" id="addTaskName" placeholder="任務名稱" style="flex: 1; min-width: 150px;" required>
+            <input type="text" id="addTaskDesc" placeholder="任務說明" style="flex: 2; min-width: 200px;" required>
           </div>
-          <button type="submit" class="btn btn-outline" style="border-radius: 8px; border-color: var(--line-strong);">+ 新增任務</button>
+          <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; width: 100%;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 13px; color: var(--ink-soft);">觸發類型</span>
+              <select id="addTaskTriggerType" style="width: 160px;" onchange="toggleAddTaskTargetField()">
+                <option value="manual">手動審核 (Manual)</option>
+                <option value="checkin">每日簽到 (Check In)</option>
+                <option value="spend_money">今日消費達標 (Today's Spend)</option>
+              </select>
+            </div>
+            
+            <div id="addTaskTargetValueGroup" style="display: none; align-items: center; gap: 6px;">
+              <span style="font-size: 13px; color: var(--ink-soft);">達標金額 (HK$)</span>
+              <input type="number" id="addTaskTargetValue" placeholder="例如: 5" style="width: 80px;" min="1" value="5">
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 13px; color: var(--ink-soft);">獎勵類型</span>
+              <select id="addTaskRewardType" style="width: 100px;">
+                <option value="points">積分</option>
+                <option value="stamps">印花</option>
+                <option value="spins">抽獎次數</option>
+              </select>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 13px; color: var(--ink-soft);">數量</span>
+              <input type="number" id="addTaskReward" placeholder="數量" style="width: 80px;" min="1" required>
+            </div>
+            
+            <button type="submit" class="btn btn-outline" style="border-radius: 8px; border-color: var(--line-strong); padding: 8px 16px; margin-left: auto;">+ 新增任務</button>
+          </div>
         </form>
       </div>
 
@@ -458,32 +481,6 @@ if (empty($_SESSION['admin_logged_in'])):
       </div>
     </div>
 
-    <!-- ============ PROCESS RECEIPTS ============ -->
-    <div class="page-section" id="page-receipts">
-      <div class="main-header">
-        <div class="header-left">
-          <button class="menu-toggle" onclick="toggleMenu()">☰</button>
-          <div>
-            <h1>審核消費收據</h1>
-            <div class="desc">審核會員上傳的購物發票收據，核實並發放點數/印花</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card-title">待處理收據申請</h2>
-        <div style="overflow-x:auto; margin-top: 16px;">
-          <table class="data-table stack-mobile">
-            <thead>
-              <tr>
-                <th>上傳時間</th><th>會員</th><th>收據圖片</th><th>處理狀態</th><th>消費金額</th><th>核發點數</th><th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="receiptsTableBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
 
     <!-- ============ VOUCHERS LIST ============ -->
     <div class="page-section" id="page-vouchers">
@@ -626,6 +623,34 @@ if (empty($_SESSION['admin_logged_in'])):
           </div>
         </div>
 
+        <!-- Point & Stamp Conversion Rates (NEW) -->
+        <div class="card">
+          <h2 class="card-title" style="text-align: left; margin-bottom: 8px;">1.5 積分與印花換算比例設定</h2>
+          <div class="form-field" style="margin-top: 14px;">
+            <label style="font-weight: 600; color: var(--primary);">【積分模式】換算設定 (Points System Rate)</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13.5px;">每消費 HK$</span>
+              <input type="number" id="settingPointsMoneyRate" style="width: 100px; text-align: center;" min="1" required>
+              <span style="font-size: 13.5px;">可獲得</span>
+              <input type="number" id="settingPointsRewardRate" style="width: 100px; text-align: center;" min="1" required>
+              <span style="font-size: 13.5px;">積分 (Points)</span>
+            </div>
+            <p style="font-size: 11.5px; color: var(--ink-soft); margin-top: 6px;">預設為 HK$ 1 = 1 積分。不可輸入小數點。</p>
+          </div>
+
+          <div class="form-field" style="margin-top: 18px;">
+            <label style="font-weight: 600; color: var(--primary);">【印花模式】換算設定 (Stamps System Rate)</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13.5px;">每消費 HK$</span>
+              <input type="number" id="settingStampsMoneyRate" style="width: 100px; text-align: center;" min="1" required>
+              <span style="font-size: 13.5px;">可獲得</span>
+              <input type="number" id="settingStampsRewardRate" style="width: 100px; text-align: center;" min="1" required>
+              <span style="font-size: 13.5px;">個印花 (Stamps)</span>
+            </div>
+            <p style="font-size: 11.5px; color: var(--ink-soft); margin-top: 6px;">預設為 HK$ 100 = 1 印花。不可輸入小數點。</p>
+          </div>
+        </div>
+
         <!-- OTP Settings Card (NEW) -->
         <div class="card">
           <h2 class="card-title" style="text-align: left; margin-bottom: 8px;">2. OTP 安全驗證設定</h2>
@@ -646,6 +671,33 @@ if (empty($_SESSION['admin_logged_in'])):
           <div class="form-field">
             <label>登入過期天數 (超過此天數未登入，系統將要求輸入 OTP)</label>
             <input type="number" id="settingOtpExpiry" placeholder="例如: 30" min="1" value="30">
+          </div>
+        </div>
+
+        <!-- Biometric Login Control Card (NEW) -->
+        <div class="card">
+          <h2 class="card-title" style="text-align: left; margin-bottom: 8px;">2.5 生物辨識登入控制 (Biometric Settings)</h2>
+          <div class="form-field">
+            <label style="display:flex; align-items:center; gap:10px;">
+              啟用生物辨識登入功能 (Face ID / Touch ID)
+              <div class="switch"><input type="checkbox" id="settingBiometricLoginEnabled"><span class="track"></span><span class="thumb"></span></div>
+            </label>
+            <p style="font-size: 11.5px; color: var(--ink-soft); margin-top: 6px;">若此功能尚在開發中，關閉此開關將隱藏所有用戶端的 Face ID / 生物辨識登入及設定選項。</p>
+          </div>
+        </div>
+
+        <!-- Welcome Voucher Settings (NEW) -->
+        <div class="card">
+          <h2 class="card-title" style="text-align: left; margin-bottom: 8px;">2.8 新註冊迎新優惠券設定 (Welcome Voucher Settings)</h2>
+          <div class="form-field">
+            <label style="display:flex; align-items:center; gap:10px;">
+              啟用註冊贈送迎新優惠券 (Send Welcome Voucher)
+              <div class="switch"><input type="checkbox" id="settingWelcomeVoucherEnabled"><span class="track"></span><span class="thumb"></span></div>
+            </label>
+          </div>
+          <div class="form-field">
+            <label>迎新優惠券名稱 (Welcome Voucher Name)</label>
+            <input type="text" id="settingWelcomeVoucherName" placeholder="例如: 全單 9 折迎新優惠">
           </div>
         </div>
 
@@ -752,7 +804,7 @@ if (empty($_SESSION['admin_logged_in'])):
 <div class="modal-overlay" id="editVoucherModal">
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal('editVoucherModal')">✕</button>
-    <h3>修改優惠券代碼</h3>
+    <h3>修改優惠券資料</h3>
     <div class="modal-sub" id="editVoucherName">—</div>
     
     <div class="form-field">
@@ -760,7 +812,18 @@ if (empty($_SESSION['admin_logged_in'])):
       <input type="text" id="editVoucherCodeInput" placeholder="請輸入新代碼">
     </div>
 
-    <button class="btn btn-primary btn-block" style="border-radius:100px;" onclick="saveVoucherCode()">儲存代碼</button>
+    <div class="form-field">
+      <label>有效日期 / 到期日 (Expiry Date)</label>
+      <input type="date" id="editVoucherExpiryInput" style="padding: 10px; border-radius: 8px; border: 1px solid var(--line); font-size: 14px; width: 100%;">
+      <div style="display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;">
+        <button type="button" class="btn btn-outline btn-sm" onclick="setExpiryPreset(1)">1個月</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="setExpiryPreset(3)">3個月</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="setExpiryPreset(6)">6個月</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="setExpiryPreset(12)">12個月</button>
+      </div>
+    </div>
+
+    <button class="btn btn-primary btn-block" style="border-radius:100px; margin-top: 14px;" onclick="saveVoucherCode()">儲存變更</button>
   </div>
 </div>
 
@@ -788,33 +851,6 @@ if (empty($_SESSION['admin_logged_in'])):
   </div>
 </div>
 
-<!-- View Receipt Modal -->
-<div class="modal-overlay" id="receiptModal">
-  <div class="modal-box">
-    <button class="modal-close" onclick="closeModal('receiptModal')">✕</button>
-    <h3>消費收據審核</h3>
-    <div class="modal-sub" id="receiptModalMemberName">—</div>
-
-    <div style="text-align: center; margin-bottom: 20px;">
-      <img id="receiptModalImg" src="" style="max-width: 100%; max-height: 280px; border-radius: 8px; border: 1px solid var(--line-strong);">
-    </div>
-
-    <div class="form-field">
-      <label>核對：消費金額 (HK$)</label>
-      <input type="number" id="receiptAmountInput" value="200" oninput="calculateReceiptPoints()">
-    </div>
-
-    <div class="form-field">
-      <label id="receiptGrantedLabel">預計發放的積分</label>
-      <input type="number" id="receiptGrantedInput" value="200">
-    </div>
-
-    <div style="display: flex; gap: 10px;">
-      <button class="btn btn-primary" style="flex: 1; border-radius: 100px;" onclick="processReceipt('approved')">✅ 核准發放</button>
-      <button class="btn btn-danger" style="flex: 1; border-radius: 100px;" onclick="processReceipt('rejected')">❌ 駁回拒絕</button>
-    </div>
-  </div>
-</div>
 
 <!-- Manual issue voucher modal -->
 <div class="modal-overlay" id="issueModal">
@@ -840,7 +876,6 @@ if (empty($_SESSION['admin_logged_in'])):
   let fullData = null;
   let editingMemberId = null;
   let issuingMemberId = null;
-  let processingReceiptId = null;
   let editingTaskId = 0;
   let editingVoucherId = 0;
   let editingStaffId = 0;
@@ -914,7 +949,6 @@ if (empty($_SESSION['admin_logged_in'])):
 
         renderDashboard();
         renderMembers();
-        renderReceipts();
         renderTasks();
         renderVouchers();
         renderStaff();
@@ -1148,7 +1182,7 @@ if (empty($_SESSION['admin_logged_in'])):
       const tr = document.createElement('tr');
       const expectedReward = t.reward_amount || 0;
       const taskName = t.task_name || t.task_type;
-      const taskCurrencyStr = t.reward_type === 'stamps' ? '印花' : '積分';
+      const taskCurrencyStr = t.reward_type === 'stamps' ? '印花' : (t.reward_type === 'spins' ? '次抽獎' : '積分');
 
       tr.innerHTML = `
         <td class="muted" data-label="申請時間">${t.created_at}</td>
@@ -1199,103 +1233,7 @@ if (empty($_SESSION['admin_logged_in'])):
     } catch(e) {}
   }
 
-  // Receipts process listing
-  function renderReceipts() {
-    const tbody = document.getElementById('receiptsTableBody');
-    tbody.innerHTML = '';
-    
-    const receipts = fullData.receipts || [];
-    if (receipts.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state">目前無收據申報記錄</div></td></tr>`;
-      return;
-    }
 
-    const statusLabels = {pending: '待審核', approved: '已核准', rejected: '已駁回'};
-
-    receipts.forEach(r => {
-      const tr = document.createElement('tr');
-      
-      const amtStr = r.amount ? `HK$ ${parseFloat(r.amount).toFixed(2)}` : '—';
-      const grantedStr = r.reward_granted ? `${r.reward_granted} ${fullData.settings.system_mode === 'stamps' ? '印花' : '積分'}` : '—';
-
-      tr.innerHTML = `
-        <td class="muted" data-label="上傳時間">${r.upload_time}</td>
-        <td class="member-name" data-label="會員">${r.member_name}</td>
-        <td data-label="收據圖片"><img class="receipt-thumb" src="${r.image_path}" onclick="zoomReceipt(${r.id})" title="點擊放大審核"></td>
-        <td data-label="處理狀態"><span class="status-chip ${r.status}">${statusLabels[r.status] || r.status}</span></td>
-        <td data-label="消費金額">${amtStr}</td>
-        <td data-label="核發點數">${grantedStr}</td>
-        <td data-label="操作" style="display:flex; justify-content:flex-end;">
-          ${r.status === 'pending' ? `<button class="btn btn-primary btn-sm" onclick="zoomReceipt(${r.id})">審核核銷</button>` : '—'}
-        </td>
-      `;
-      tbody.appendChild(tr);
-    });
-  }
-
-  function zoomReceipt(id) {
-    const r = fullData.receipts.find(x => x.id == id);
-    if (!r) return;
-    processingReceiptId = id;
-
-    document.getElementById('receiptModalMemberName').textContent = `會員：${r.member_name} · 上傳於 ${r.upload_time}`;
-    document.getElementById('receiptModalImg').src = r.image_path;
-    
-    // Set default value suggestion
-    document.getElementById('receiptAmountInput').value = 240;
-    calculateReceiptPoints();
-
-    openModal('receiptModal');
-  }
-
-  function calculateReceiptPoints() {
-    const amt = parseFloat(document.getElementById('receiptAmountInput').value) || 0;
-    const mode = fullData.settings.system_mode || 'points';
-    const input = document.getElementById('receiptGrantedInput');
-    const label = document.getElementById('receiptGrantedLabel');
-
-    if (mode === 'stamps') {
-      label.textContent = '核發印花數量 (Stamps)';
-      // Stamps: e.g. 1 stamp per $100 spent, minimum 1
-      const stamps = Math.max(1, Math.floor(amt / 100));
-      input.value = stamps;
-    } else {
-      label.textContent = '核發積分 (Points)';
-      // Points: e.g. 1 point per $1 spent
-      input.value = Math.floor(amt);
-    }
-  }
-
-  async function processReceipt(status) {
-    const amt = parseFloat(document.getElementById('receiptAmountInput').value) || 0;
-    const granted = parseInt(document.getElementById('receiptGrantedInput').value, 10) || 0;
-
-    const form = new FormData();
-    form.append('receipt_id', processingReceiptId);
-    form.append('status', status);
-    form.append('amount', amt);
-    form.append('reward_granted', granted);
-
-    try {
-      const res = await fetch('api.php?action=admin_process_receipt', {
-        method: 'POST',
-        body: form
-      });
-      const text = await res.text();
-      try {
-        const data = JSON.parse(text);
-        if (data.success) {
-          showToast(data.message);
-          closeModal('receiptModal');
-          loadAdminData();
-        } else {
-          showToast(data.message);
-        }
-      } catch (err) {
-        alert("資料庫錯誤 Database Error:\n\n" + text.substring(0,400));
-      }
-    } catch(e) {}
-  }
 
   // Issued vouchers list view
   function renderVouchers() {
@@ -1321,7 +1259,7 @@ if (empty($_SESSION['admin_logged_in'])):
         <td class="muted" data-label="到期日">${v.expiry_date}</td>
         <td data-label="狀態"><span class="status-chip ${v.used == 1 ? 'used' : 'unused'}">${v.used == 1 ? '已使用' : '未使用'}</span></td>
         <td data-label="操作" style="display:flex; gap:6px; justify-content:flex-end;">
-          <button class="btn btn-outline btn-sm" onclick="openEditVoucher(${v.id}, '${v.name}', '${v.code}')">改碼</button>
+          <button class="btn btn-outline btn-sm" onclick="openEditVoucher(${v.id}, '${v.name.replace(/'/g, "\\'")}', '${v.code}', '${v.expiry_date}')">編輯</button>
           ${v.used == 0 ? `<button class="btn btn-outline btn-sm" style="color:var(--ok); border-color:var(--ok);" onclick="redeemVoucherCode('${v.code}')">核銷</button>` : ''}
         </td>
       `;
@@ -1329,20 +1267,33 @@ if (empty($_SESSION['admin_logged_in'])):
     });
   }
 
-  function openEditVoucher(id, name, code) {
+  function openEditVoucher(id, name, code, expiryDate) {
     editingVoucherId = id;
     document.getElementById('editVoucherName').textContent = `卡券名稱: ${name}`;
     document.getElementById('editVoucherCodeInput').value = code;
+    document.getElementById('editVoucherExpiryInput').value = expiryDate;
     openModal('editVoucherModal');
+  }
+
+  function setExpiryPreset(months) {
+    const d = new Date();
+    d.setMonth(d.getMonth() + months);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    document.getElementById('editVoucherExpiryInput').value = `${yyyy}-${mm}-${dd}`;
   }
 
   async function saveVoucherCode() {
     const code = document.getElementById('editVoucherCodeInput').value.trim();
+    const expiry = document.getElementById('editVoucherExpiryInput').value;
     if(!code) { showToast('代碼不能為空'); return; }
+    if(!expiry) { showToast('到期日不能為空'); return; }
     
     const form = new FormData();
     form.append('voucher_id', editingVoucherId);
     form.append('code', code);
+    form.append('expiry_date', expiry);
     
     try {
       const res = await fetch('api.php?action=admin_update_voucher_code', { method:'POST', body:form });
@@ -1539,11 +1490,19 @@ if (empty($_SESSION['admin_logged_in'])):
     const tList = document.getElementById('tasksConfigAdminList');
     if (fullData.tasks_config && fullData.tasks_config.length > 0) {
       tList.innerHTML = fullData.tasks_config.map(t => {
-        const typeStr = t.reward_type === 'stamps' ? '印花' : '積分';
+        const typeStr = t.reward_type === 'stamps' ? '印花' : (t.reward_type === 'spins' ? '次抽獎' : '積分');
+        
+        let triggerLabel = '手動審核';
+        if (t.task_type === 'checkin') {
+          triggerLabel = t.target_value > 0 ? `每日簽到 (需消費滿 HK$ ${t.target_value})` : '每日簽到';
+        }
+        if (t.task_type === 'spend_money') triggerLabel = `今日消費滿 HK$ ${t.target_value}`;
+
         return `
-        <div class="edit-row" style="flex-wrap: wrap;">
+        <div class="edit-row" style="flex-wrap: wrap; gap: 8px;">
           <input type="text" class="r-name-input" value="${t.name_zh}" style="flex:1; min-width: 120px;" onchange="updateTaskConfig(${t.id}, 'name_zh', this.value)" title="任務名稱">
           <input type="text" class="r-name-input" value="${t.desc_zh}" style="flex:2; min-width: 150px; font-size:12px;" onchange="updateTaskConfig(${t.id}, 'desc_zh', this.value)" title="任務說明">
+          <div style="font-size:12px; background:var(--bg-faint); padding: 4px 8px; border-radius: 4px; color:var(--ink-soft); min-width:80px; text-align:center;">${triggerLabel}</div>
           <div style="font-size:13px; color:var(--ink-soft); min-width:30px; text-align:right;">${typeStr}</div>
           <input type="number" class="num-input" value="${t.reward_amount}" style="width:70px; margin-left:8px;" title="獎勵數量" onchange="updateTaskConfig(${t.id}, 'reward_amount', this.value)">
           <button class="del-btn" onclick="deleteTaskConfig(${t.id})" title="刪除項目" style="margin-left:4px;">🗑️</button>
@@ -1664,17 +1623,38 @@ if (empty($_SESSION['admin_logged_in'])):
     }
   }
 
+  function toggleAddTaskTargetField() {
+    const triggerType = document.getElementById('addTaskTriggerType').value;
+    const targetGroup = document.getElementById('addTaskTargetValueGroup');
+    if (triggerType === 'spend_money' || triggerType === 'checkin') {
+      targetGroup.style.display = 'flex';
+      document.getElementById('addTaskTargetValue').required = true;
+      if (triggerType === 'checkin' && !document.getElementById('addTaskTargetValue').value) {
+        document.getElementById('addTaskTargetValue').value = 0;
+      }
+    } else {
+      targetGroup.style.display = 'none';
+      document.getElementById('addTaskTargetValue').required = false;
+    }
+  }
+
   async function addTaskConfig(e) {
     e.preventDefault();
+    const triggerType = document.getElementById('addTaskTriggerType').value;
+    const targetVal = (triggerType === 'spend_money' || triggerType === 'checkin') ? parseInt(document.getElementById('addTaskTargetValue').value, 10) : 0;
+
     const newTask = {
       name_zh: document.getElementById('addTaskName').value,
       desc_zh: document.getElementById('addTaskDesc').value,
-      type: document.getElementById('addTaskType').value,
-      amount: parseInt(document.getElementById('addTaskReward').value, 10) || 0
+      reward_type: document.getElementById('addTaskRewardType').value,
+      reward_amount: parseInt(document.getElementById('addTaskReward').value, 10) || 0,
+      task_type: triggerType,
+      target_value: targetVal
     };
     const res = await adminAction('admin_add_task_config', newTask);
     if(res && res.success) {
       e.target.reset();
+      toggleAddTaskTargetField();
       showToast('成功新增任務！');
       loadAdminData();
     }
@@ -1689,10 +1669,23 @@ if (empty($_SESSION['admin_logged_in'])):
     document.getElementById('settingLogoText').value = settings.logo_text || 'CASA & CO.';
     document.getElementById('settingLogoImage').value = settings.logo_image_url || '';
 
+    // Conversion rates
+    document.getElementById('settingPointsMoneyRate').value = settings.points_money_rate || '1';
+    document.getElementById('settingPointsRewardRate').value = settings.points_reward_rate || '1';
+    document.getElementById('settingStampsMoneyRate').value = settings.stamps_money_rate || '100';
+    document.getElementById('settingStampsRewardRate').value = settings.stamps_reward_rate || '1';
+
+    // Biometric Login enabled setting
+    document.getElementById('settingBiometricLoginEnabled').checked = settings.biometric_login_enabled == '1';
+
     // Add missing OTP population
     document.getElementById('settingOtpEnabled').checked = (settings.otp_enabled !== undefined ? settings.otp_enabled == '1' : true);
     document.getElementById('settingOtpMethod').value = settings.otp_method || 'both';
     document.getElementById('settingOtpExpiry').value = settings.otp_expiry_days || '30';
+
+    // Welcome voucher settings
+    document.getElementById('settingWelcomeVoucherEnabled').checked = settings.welcome_voucher_enabled !== '0';
+    document.getElementById('settingWelcomeVoucherName').value = settings.welcome_voucher_name || '全單 9 折迎新優惠';
 
     // Render Bottom bar setup rows
     let barList = [];
@@ -1773,14 +1766,28 @@ if (empty($_SESSION['admin_logged_in'])):
       tab.visible = document.getElementById(`barTabVisible-${index}`).checked;
     });
 
+    const pointsMoney = parseInt(document.getElementById('settingPointsMoneyRate').value, 10) || 1;
+    const pointsReward = parseInt(document.getElementById('settingPointsRewardRate').value, 10) || 1;
+    const stampsMoney = parseInt(document.getElementById('settingStampsMoneyRate').value, 10) || 100;
+    const stampsReward = parseInt(document.getElementById('settingStampsRewardRate').value, 10) || 1;
+
     const form = new FormData();
     form.append('system_mode', document.getElementById('settingSystemMode').value);
     form.append('logo_type', document.getElementById('settingLogoType').value);
     form.append('logo_text', document.getElementById('settingLogoText').value.trim());
     form.append('logo_image_url', document.getElementById('settingLogoImage').value.trim());
+    
+    form.append('points_money_rate', pointsMoney);
+    form.append('points_reward_rate', pointsReward);
+    form.append('stamps_money_rate', stampsMoney);
+    form.append('stamps_reward_rate', stampsReward);
+    form.append('biometric_login_enabled', document.getElementById('settingBiometricLoginEnabled').checked ? '1' : '0');
+
     form.append('otp_enabled', document.getElementById('settingOtpEnabled').checked ? '1' : '0');
     form.append('otp_method', document.getElementById('settingOtpMethod').value);
     form.append('otp_expiry_days', document.getElementById('settingOtpExpiry').value);
+    form.append('welcome_voucher_enabled', document.getElementById('settingWelcomeVoucherEnabled').checked ? '1' : '0');
+    form.append('welcome_voucher_name', document.getElementById('settingWelcomeVoucherName').value.trim());
     form.append('bottom_bar', JSON.stringify(barList));
 
     try {

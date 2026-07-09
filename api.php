@@ -24,9 +24,23 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS tasks_config (
     reward_amount INT NOT NULL
 )");
 
+// Auto-create member_spend table
+$pdo->exec("CREATE TABLE IF NOT EXISTS member_spend (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)");
+
+// Auto-add new columns to existing tables
+try { $pdo->exec("ALTER TABLE tasks_config ADD COLUMN task_type VARCHAR(50) DEFAULT 'manual'"); } catch(Exception $e){}
+try { $pdo->exec("ALTER TABLE tasks_config ADD COLUMN target_value INT DEFAULT 0"); } catch(Exception $e){}
+
 // Auto-add new columns to existing users table (Safely catch if already exists)
 try { $pdo->exec("ALTER TABLE users ADD COLUMN phone VARCHAR(20) DEFAULT ''"); } catch(Exception $e){}
 try { $pdo->exec("ALTER TABLE users ADD COLUMN last_login_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP"); } catch(Exception $e){}
+try { $pdo->exec("ALTER TABLE users ADD COLUMN phone_verified TINYINT DEFAULT 0"); } catch(Exception $e){}
+try { $pdo->exec("ALTER TABLE users ADD COLUMN email_verified TINYINT DEFAULT 0"); } catch(Exception $e){}
 
 // Insert default tasks if table is empty
 try {
@@ -159,6 +173,72 @@ try {
             }
             break;
 
+        case 'send_profile_verify_otp':
+            $userId = requireLogin();
+            $type = trim($_POST['type'] ?? ''); // 'phone' or 'email'
+            $value = trim($_POST['value'] ?? '');
+            
+            if (empty($type) || empty($value)) {
+                echo json_encode_safe(['success' => false, 'message' => '手機號碼或電子信箱不能為空']);
+                exit;
+            }
+            if ($type === 'email' && strpos($value, '@') === false) {
+                echo json_encode_safe(['success' => false, 'message' => '電子信箱格式錯誤']);
+                exit;
+            }
+
+            // Check if another verified account already has this value
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE id != ? AND ($type = ? AND {$type}_verified = 1)");
+            $stmt->execute([$userId, $value]);
+            if ($stmt->fetchColumn() > 0) {
+                echo json_encode_safe(['success' => false, 'message' => '此聯絡資料已被其他已驗證的帳戶綁定']);
+                exit;
+            }
+
+            $_SESSION['profile_verify_otp'] = [
+                'user_id' => $userId,
+                'type' => $type,
+                'value' => $value,
+                'code' => '123456'
+            ];
+            echo json_encode_safe(['success' => true, 'message' => "驗證碼已發送至 {$value} (測試用請輸入: 123456)"]);
+            break;
+
+        case 'verify_profile_contact':
+            $userId = requireLogin();
+            $otp = trim($_POST['otp'] ?? '');
+            
+            if (!isset($_SESSION['profile_verify_otp']) || $_SESSION['profile_verify_otp']['user_id'] != $userId) {
+                echo json_encode_safe(['success' => false, 'message' => '無效的驗證會話，請重新獲取驗證碼']);
+                exit;
+            }
+
+            $saved = $_SESSION['profile_verify_otp'];
+            if ($otp !== '123456' && $otp !== $saved['code']) {
+                echo json_encode_safe(['success' => false, 'message' => '驗證碼錯誤 / Invalid OTP']);
+                exit;
+            }
+
+            $type = $saved['type'];
+            $value = $saved['value'];
+
+            $stmt = $pdo->prepare("UPDATE users SET $type = ?, {$type}_verified = 1 WHERE id = ?");
+            if ($stmt && $stmt->execute([$value, $userId])) {
+                $stmtUser = $pdo->prepare("SELECT name FROM users WHERE id = ?");
+                $stmtUser->execute([$userId]);
+                $userName = $stmtUser->fetchColumn();
+                
+                $logTxtZh = "會員 <b>$userName</b> 驗證綁定了其" . ($type === 'phone' ? '手機號碼' : '電子信箱');
+                $logTxtEn = "Member <b>$userName</b> verified and bound their " . ($type === 'phone' ? 'phone' : 'email');
+                addActivityLog($pdo, '🟢', $logTxtZh, $logTxtEn);
+
+                unset($_SESSION['profile_verify_otp']);
+                echo json_encode_safe(['success' => true, 'message' => '驗證綁定成功！']);
+            } else {
+                echo json_encode_safe(['success' => false, 'message' => '資料庫更新失敗']);
+            }
+            break;
+
         case 'login':
             $username = trim($_POST['username'] ?? '');
             $password = trim($_POST['password'] ?? '');
@@ -177,6 +257,12 @@ try {
             }
 
             if ($biometric) {
+                $settings = getPublicSettings($pdo);
+                $bio_enabled = intval($settings['biometric_login_enabled'] ?? 0);
+                if ($bio_enabled !== 1) {
+                    echo json_encode_safe(['success' => false, 'message' => '生物辨識登入功能尚未啟用 / Biometric login is disabled']);
+                    exit;
+                }
                 if ($user && $user['biometric_enabled'] == 1) {
                     // Biometric bypass password
                 } else {
@@ -263,18 +349,35 @@ try {
             $qr_code = 'USER_QR_' . strtoupper(substr(md5($username . time()), 0, 10));
 
             try {
-                // New users now get 0 points and 0 stamps, with 2 free spins
-                $stmt = $pdo->prepare("INSERT INTO users (username, password, name, email, phone, gender, points, stamps, spins, biometric_enabled, qr_code) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 2, ?, ?)");
-                $stmt->execute([$username, $hashed_password, $name, $email, $phone, $gender, $biometric_enabled, $qr_code]);
+                $settings = getPublicSettings($pdo);
+                $otp_enabled = intval($settings['otp_enabled'] ?? 1);
+                
+                $phone_verified = 0;
+                $email_verified = 0;
+                if ($otp_enabled === 1) {
+                    if (!empty($email)) {
+                        $email_verified = 1;
+                    }
+                    if (!empty($phone)) {
+                        $phone_verified = 1;
+                    }
+                }
+
+                $stmt = $pdo->prepare("INSERT INTO users (username, password, name, email, phone, gender, points, stamps, spins, biometric_enabled, qr_code, phone_verified, email_verified) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 2, ?, ?, ?, ?)");
+                $stmt->execute([$username, $hashed_password, $name, $email, $phone, $gender, $biometric_enabled, $qr_code, $phone_verified, $email_verified]);
                 
                 $userId = $pdo->lastInsertId();
                 $_SESSION['user_id'] = $userId;
 
-                // [FIXED BUG]: Replace hardcoded WELCOME10 with generated random code!
-                $stmtV = $pdo->prepare("INSERT INTO vouchers (user_id, name, code, expiry_date, used) VALUES (?, ?, ?, ?, 0)");
-                if ($stmtV) {
-                    $welcomeCode = generateVoucherCode(); 
-                    $stmtV->execute([$userId, '全單 9 折迎新優惠', $welcomeCode, date('Y-m-d', strtotime('+30 days'))]);
+                $welcomeEnabled = intval($settings['welcome_voucher_enabled'] ?? 1);
+                $welcomeName = $settings['welcome_voucher_name'] ?? '全單 9 折迎新優惠';
+                
+                if ($welcomeEnabled === 1 && !empty($welcomeName)) {
+                    $stmtV = $pdo->prepare("INSERT INTO vouchers (user_id, name, code, expiry_date, used) VALUES (?, ?, ?, ?, 0)");
+                    if ($stmtV) {
+                        $welcomeCode = generateVoucherCode(); 
+                        $stmtV->execute([$userId, $welcomeName, $welcomeCode, date('Y-m-d', strtotime('+30 days'))]);
+                    }
                 }
 
                 addActivityLog($pdo, '👋', "新會員 <b>$name</b> 完成註冊", "New member <b>$name</b> joined the system");
@@ -292,7 +395,7 @@ try {
         case 'get_user_data':
             $userId = requireLogin();
             
-            $stmt = $pdo->prepare("SELECT id, username, name, email, phone, gender, points, stamps, spins, biometric_enabled, joined_date, qr_code FROM users WHERE id = ?");
+            $stmt = $pdo->prepare("SELECT id, username, name, email, phone, gender, points, stamps, spins, biometric_enabled, joined_date, qr_code, phone_verified, email_verified FROM users WHERE id = ?");
             if ($stmt && $stmt->execute([$userId])) {
                 $user = $stmt->fetch();
             } else {
@@ -322,6 +425,23 @@ try {
             $wheel_prizes = [];
             try { $stmtW = $pdo->query("SELECT * FROM wheel_prizes ORDER BY id ASC"); if ($stmtW) $wheel_prizes = $stmtW->fetchAll(); } catch(Throwable $e){}
 
+            // Fetch today's spend and tasks
+            $todaySpend = 0;
+            try {
+                $stmtSpend = $pdo->prepare("SELECT SUM(amount) FROM member_spend WHERE user_id = ? AND DATE(created_at) = CURRENT_DATE()");
+                if ($stmtSpend && $stmtSpend->execute([$userId])) {
+                    $todaySpend = floatval($stmtSpend->fetchColumn() ?: 0);
+                }
+            } catch(Throwable $e){}
+
+            $userTasksToday = [];
+            try {
+                $stmtUserTasks = $pdo->prepare("SELECT task_type, status FROM user_tasks WHERE user_id = ? AND DATE(created_at) = CURRENT_DATE()");
+                if ($stmtUserTasks && $stmtUserTasks->execute([$userId])) {
+                    $userTasksToday = $stmtUserTasks->fetchAll(PDO::FETCH_ASSOC);
+                }
+            } catch(Throwable $e){}
+
             echo json_encode_safe([
                 'success' => true,
                 'user' => $user,
@@ -329,7 +449,9 @@ try {
                 'settings' => $settings,
                 'rewards' => $rewards,
                 'tasks_config' => $tasks_config,
-                'wheel_prizes' => $wheel_prizes
+                'wheel_prizes' => $wheel_prizes,
+                'today_spend' => $todaySpend,
+                'user_tasks_today' => $userTasksToday
             ]);
             break;
 
@@ -352,59 +474,35 @@ try {
             $name = trim($_POST['name'] ?? '');
             $gender = trim($_POST['gender'] ?? 'Prefer not to say');
             $email = trim($_POST['email'] ?? '');
+            $phone = trim($_POST['phone'] ?? '');
 
             if (empty($name)) {
                 echo json_encode_safe(['success' => false, 'message' => '姓名不能為空']);
                 exit;
             }
 
-            $stmt = $pdo->prepare("UPDATE users SET name = ?, gender = ?, email = ? WHERE id = ?");
-            if ($stmt) $stmt->execute([$name, $gender, $email, $userId]);
+            // Retrieve current verified flags and values to prevent modifications
+            $stmtUser = $pdo->prepare("SELECT phone, email, phone_verified, email_verified FROM users WHERE id = ?");
+            $stmtUser->execute([$userId]);
+            $curr = $stmtUser->fetch();
+            
+            if ($curr) {
+                if (intval($curr['phone_verified']) === 1) {
+                    $phone = $curr['phone']; // locked
+                }
+                if (intval($curr['email_verified']) === 1) {
+                    $email = $curr['email']; // locked
+                }
+            }
+
+            $stmt = $pdo->prepare("UPDATE users SET name = ?, gender = ?, email = ?, phone = ? WHERE id = ?");
+            if ($stmt) $stmt->execute([$name, $gender, $email, $phone, $userId]);
             
             echo json_encode_safe(['success' => true, 'message' => '個人資料已儲存']);
             break;
 
         case 'submit_receipt':
-            $userId = requireLogin();
-            
-            if (!isset($_FILES['receipt_image']) || $_FILES['receipt_image']['error'] !== UPLOAD_ERR_OK) {
-                echo json_encode_safe(['success' => false, 'message' => '請上傳收據圖片 / Image upload error']);
-                exit;
-            }
-
-            $fileTmpPath = $_FILES['receipt_image']['tmp_name'];
-            $fileName = $_FILES['receipt_image']['name'];
-            $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-
-            $allowedExtensions = ['jpg', 'jpeg', 'png', 'webp'];
-            if (!in_array($fileExtension, $allowedExtensions)) {
-                echo json_encode_safe(['success' => false, 'message' => '僅支援 JPG, PNG, WEBP 圖片格式']);
-                exit;
-            }
-
-            $uploadDir = __DIR__ . '/uploads/';
-            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
-
-            $newFileName = 'receipt_' . $userId . '_' . time() . '.' . $fileExtension;
-            $destPath = $uploadDir . $newFileName;
-            
-            $uploadSuccess = is_uploaded_file($fileTmpPath) ? move_uploaded_file($fileTmpPath, $destPath) : copy($fileTmpPath, $destPath);
-
-            if ($uploadSuccess) {
-                $imageWebPath = 'uploads/' . $newFileName;
-                $stmt = $pdo->prepare("INSERT INTO receipts (user_id, image_path, status) VALUES (?, ?, 'pending')");
-                if ($stmt) $stmt->execute([$userId, $imageWebPath]);
-
-                $stmtUser = $pdo->prepare("SELECT name FROM users WHERE id = ?");
-                if ($stmtUser && $stmtUser->execute([$userId])) {
-                    $userName = $stmtUser->fetchColumn();
-                    addActivityLog($pdo, '🧾', "<b>$userName</b> 上傳了消費收據等待審核", "<b>$userName</b> uploaded a checkout receipt for review");
-                }
-
-                echo json_encode_safe(['success' => true, 'message' => '收據上傳成功，審核通過後即會發放獎勵。']);
-            } else {
-                echo json_encode_safe(['success' => false, 'message' => '儲存收據圖片失敗，請重試。']);
-            }
+            echo json_encode_safe(['success' => false, 'message' => '收據申報功能已關閉 / Receipt upload is disabled']);
             break;
 
         case 'submit_task':
@@ -417,17 +515,128 @@ try {
                 exit; 
             }
 
-            $stmt = $pdo->prepare("INSERT INTO user_tasks (user_id, task_type, status) VALUES (?, ?, 'pending')");
-            if ($stmt) $stmt->execute([$userId, $taskId]);
+            $taskType = $taskDef['task_type'] ?: 'manual';
+            $rewardType = $taskDef['reward_type'] ?: 'points';
+            $rewardAmount = intval($taskDef['reward_amount'] ?? 0);
 
-            $stmtUser = $pdo->prepare("SELECT name FROM users WHERE id = ?");
-            if ($stmtUser && $stmtUser->execute([$userId])) {
-                $userName = $stmtUser->fetchColumn();
-                $taskName = $taskDef['name_zh'];
-                addActivityLog($pdo, '📌', "<b>$userName</b> 提交了「{$taskName}」任務審核", "<b>$userName</b> submitted {$taskName} task for review");
+            // Check if already completed and approved today
+            $stmtCheck = $pdo->prepare("SELECT COUNT(*) FROM user_tasks WHERE user_id = ? AND task_type = ? AND DATE(created_at) = CURRENT_DATE() AND status = 'approved'");
+            $stmtCheck->execute([$userId, $taskId]);
+            if ($stmtCheck->fetchColumn() > 0) {
+                echo json_encode_safe(['success' => false, 'message' => '您今天已經完成此任務並領取獎勵了。']);
+                exit;
             }
 
-            echo json_encode_safe(['success' => true, 'message' => '任務已提交審核。']);
+            if ($taskType === 'checkin') {
+                $targetVal = floatval($taskDef['target_value'] ?? 0);
+                if ($targetVal > 0) {
+                    $todaySpend = 0;
+                    $stmtSpend = $pdo->prepare("SELECT SUM(amount) FROM member_spend WHERE user_id = ? AND DATE(created_at) = CURRENT_DATE()");
+                    if ($stmtSpend && $stmtSpend->execute([$userId])) {
+                        $todaySpend = floatval($stmtSpend->fetchColumn() ?: 0);
+                    }
+                    if ($todaySpend < $targetVal) {
+                        echo json_encode_safe(['success' => false, 'message' => "本日簽到需要今日消費滿 HK\$ {$targetVal}。您今日消費金額為 HK\$ {$todaySpend}，尚未達標。"]);
+                        exit;
+                    }
+                }
+
+                $pdo->beginTransaction();
+                try {
+                    $stmt = $pdo->prepare("INSERT INTO user_tasks (user_id, task_type, status) VALUES (?, ?, 'approved')");
+                    $stmt->execute([$userId, $taskId]);
+
+                    if ($rewardType === 'stamps') {
+                        $stmtAdd = $pdo->prepare("UPDATE users SET stamps = LEAST(10, stamps + ?) WHERE id = ?");
+                        $stmtAdd->execute([$rewardAmount, $userId]);
+                    } elseif ($rewardType === 'spins') {
+                        $stmtAdd = $pdo->prepare("UPDATE users SET spins = spins + ? WHERE id = ?");
+                        $stmtAdd->execute([$rewardAmount, $userId]);
+                    } else {
+                        $stmtAdd = $pdo->prepare("UPDATE users SET points = points + ? WHERE id = ?");
+                        $stmtAdd->execute([$rewardAmount, $userId]);
+                    }
+
+                    $stmtUser = $pdo->prepare("SELECT name FROM users WHERE id = ?");
+                    $stmtUser->execute([$userId]);
+                    $userName = $stmtUser->fetchColumn();
+                    $taskName = $taskDef['name_zh'];
+                    addActivityLog($pdo, '📌', "<b>$userName</b> 完成了「{$taskName}」每日簽到任務", "");
+
+                    $pdo->commit();
+                    echo json_encode_safe(['success' => true, 'message' => '簽到成功！獎勵已發放。']);
+                } catch(Exception $e) {
+                    $pdo->rollBack();
+                    echo json_encode_safe(['success' => false, 'message' => '簽到失敗: ' . $e->getMessage()]);
+                }
+                exit;
+
+            } else if ($taskType === 'spend_money') {
+                // Get today's spend
+                $todaySpend = 0;
+                $stmtSpend = $pdo->prepare("SELECT SUM(amount) FROM member_spend WHERE user_id = ? AND DATE(created_at) = CURRENT_DATE()");
+                if ($stmtSpend && $stmtSpend->execute([$userId])) {
+                    $todaySpend = floatval($stmtSpend->fetchColumn() ?: 0);
+                }
+                $targetVal = floatval($taskDef['target_value'] ?? 0);
+
+                if ($todaySpend < $targetVal) {
+                    echo json_encode_safe(['success' => false, 'message' => "今日消費金額 (HK$ {$todaySpend}) 尚未達到任務目標 (HK$ {$targetVal})。"]);
+                    exit;
+                }
+
+                $pdo->beginTransaction();
+                try {
+                    $stmt = $pdo->prepare("INSERT INTO user_tasks (user_id, task_type, status) VALUES (?, ?, 'approved')");
+                    $stmt->execute([$userId, $taskId]);
+
+                    if ($rewardType === 'stamps') {
+                        $stmtAdd = $pdo->prepare("UPDATE users SET stamps = LEAST(10, stamps + ?) WHERE id = ?");
+                        $stmtAdd->execute([$rewardAmount, $userId]);
+                    } elseif ($rewardType === 'spins') {
+                        $stmtAdd = $pdo->prepare("UPDATE users SET spins = spins + ? WHERE id = ?");
+                        $stmtAdd->execute([$rewardAmount, $userId]);
+                    } else {
+                        $stmtAdd = $pdo->prepare("UPDATE users SET points = points + ? WHERE id = ?");
+                        $stmtAdd->execute([$rewardAmount, $userId]);
+                    }
+
+                    $stmtUser = $pdo->prepare("SELECT name FROM users WHERE id = ?");
+                    $stmtUser->execute([$userId]);
+                    $userName = $stmtUser->fetchColumn();
+                    $taskName = $taskDef['name_zh'];
+                    addActivityLog($pdo, '📌', "<b>$userName</b> 完成了「{$taskName}」消費達標任務", "");
+
+                    $pdo->commit();
+                    echo json_encode_safe(['success' => true, 'message' => '領取成功！獎勵已發放。']);
+                } catch(Exception $e) {
+                    $pdo->rollBack();
+                    echo json_encode_safe(['success' => false, 'message' => '領取失敗: ' . $e->getMessage()]);
+                }
+                exit;
+
+            } else {
+                // Manual review task
+                $stmtCheckPending = $pdo->prepare("SELECT COUNT(*) FROM user_tasks WHERE user_id = ? AND task_type = ? AND status = 'pending'");
+                $stmtCheckPending->execute([$userId, $taskId]);
+                if ($stmtCheckPending->fetchColumn() > 0) {
+                    echo json_encode_safe(['success' => false, 'message' => '此任務已提交審核，請耐心等候。']);
+                    exit;
+                }
+
+                $stmt = $pdo->prepare("INSERT INTO user_tasks (user_id, task_type, status) VALUES (?, ?, 'pending')");
+                if ($stmt) $stmt->execute([$userId, $taskId]);
+
+                $stmtUser = $pdo->prepare("SELECT name FROM users WHERE id = ?");
+                if ($stmtUser && $stmtUser->execute([$userId])) {
+                    $userName = $stmtUser->fetchColumn();
+                    $taskName = $taskDef['name_zh'];
+                    addActivityLog($pdo, '📌', "<b>$userName</b> 提交了「{$taskName}」任務審核", "");
+                }
+
+                echo json_encode_safe(['success' => true, 'message' => '任務已提交審核。']);
+                exit;
+            }
             break;
 
         case 'spin_wheel':
@@ -582,18 +791,34 @@ try {
 
             if (!$user) { echo json_encode_safe(['success' => false, 'message' => '找不到該會員']); exit; }
 
-            $mode = 'points';
-            try { $mode = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'system_mode'")->fetchColumn() ?: 'points'; } catch(Throwable $e){}
+            $settings = getPublicSettings($pdo);
+            $mode = $settings['system_mode'] ?? 'points';
             
+            // Log this spend in member_spend
+            try {
+                $stmtSpend = $pdo->prepare("INSERT INTO member_spend (user_id, amount) VALUES (?, ?)");
+                if ($stmtSpend) $stmtSpend->execute([$userId, $amount]);
+            } catch(Throwable $e){}
+
             if ($mode === 'stamps') {
-                $rewardGranted = max(1, floor($amount / 100)); 
+                $stamps_money_rate = max(1, intval($settings['stamps_money_rate'] ?? 100));
+                $stamps_reward_rate = max(1, intval($settings['stamps_reward_rate'] ?? 1));
+                $rewardGranted = floor($amount / $stamps_money_rate) * $stamps_reward_rate;
+
                 $stmt = $pdo->prepare("UPDATE users SET stamps = LEAST(10, stamps + ?) WHERE id = ?");
                 if ($stmt) $stmt->execute([$rewardGranted, $userId]);
+
+                addActivityLog($pdo, '🛍️', "<b>{$user['name']}</b> 門市消費 HK\$ {$amount}，發放 {$rewardGranted} 個印花！", "");
                 echo json_encode_safe(['success' => true, 'message' => "已為 {$user['name']} 發放 {$rewardGranted} 個印花！"]);
             } else {
-                $rewardGranted = floor($amount); 
+                $points_money_rate = max(1, intval($settings['points_money_rate'] ?? 1));
+                $points_reward_rate = max(1, intval($settings['points_reward_rate'] ?? 1));
+                $rewardGranted = floor($amount / $points_money_rate) * $points_reward_rate;
+
                 $stmt = $pdo->prepare("UPDATE users SET points = points + ? WHERE id = ?");
                 if ($stmt) $stmt->execute([$rewardGranted, $userId]);
+
+                addActivityLog($pdo, '🛍️', "<b>{$user['name']}</b> 門市消費 HK\$ {$amount}，發放 {$rewardGranted} 積分！", "");
                 echo json_encode_safe(['success' => true, 'message' => "已為 {$user['name']} 發放 {$rewardGranted} 積分！"]);
             }
             break;
@@ -664,7 +889,7 @@ try {
                 $recStmt = $pdo->query("SELECT r.*, u.name as member_name FROM receipts r JOIN users u ON r.user_id = u.id ORDER BY r.id DESC");
                 if ($recStmt) $receipts = $recStmt->fetchAll();
 
-                $tStmt = $pdo->query("SELECT t.*, u.name as member_name, c.name_zh as task_name, c.reward_type FROM user_tasks t JOIN users u ON t.user_id = u.id LEFT JOIN tasks_config c ON t.task_type = c.id ORDER BY t.id DESC");
+                $tStmt = $pdo->query("SELECT t.*, u.name as member_name, c.name_zh as task_name, c.reward_type, c.reward_amount FROM user_tasks t JOIN users u ON t.user_id = u.id LEFT JOIN tasks_config c ON t.task_type = c.id ORDER BY t.id DESC");
                 if ($tStmt) $tasks = $tStmt->fetchAll();
 
                 $sStmt = $pdo->query("SELECT id, username, name, created_at FROM staff_users ORDER BY id DESC");
@@ -685,7 +910,7 @@ try {
             break;
 
         case 'admin_update_settings':
-            $params = ['system_mode', 'logo_type', 'logo_text', 'logo_image_url', 'bottom_bar', 'otp_enabled', 'otp_method', 'otp_expiry_days', 'extra_share_reward', 'extra_refer_reward'];
+            $params = ['system_mode', 'logo_type', 'logo_text', 'logo_image_url', 'bottom_bar', 'otp_enabled', 'otp_method', 'otp_expiry_days', 'extra_share_reward', 'extra_refer_reward', 'points_money_rate', 'points_reward_rate', 'stamps_money_rate', 'stamps_reward_rate', 'biometric_login_enabled', 'welcome_voucher_enabled', 'welcome_voucher_name'];
             foreach ($params as $key) {
                 if (isset($_POST[$key])) {
                     $val = $_POST[$key];
@@ -744,36 +969,7 @@ try {
             break;
 
         case 'admin_process_receipt':
-            $receiptId = intval($_POST['receipt_id'] ?? 0);
-            $status = $_POST['status'] ?? 'rejected';
-            $amount = floatval($_POST['amount'] ?? 0);
-            $rewardGranted = intval($_POST['reward_granted'] ?? 0);
-
-            $stmtR = $pdo->prepare("SELECT r.*, u.name as member_name FROM receipts r JOIN users u ON r.user_id = u.id WHERE r.id = ?"); 
-            if ($stmtR && $stmtR->execute([$receiptId])) {
-                $receipt = $stmtR->fetch();
-            } else { $receipt = false; }
-            if (!$receipt) { echo json_encode_safe(['success' => false, 'message' => '收據不存在']); exit; }
-
-            if ($status === 'approved') {
-                $stmt = $pdo->prepare("UPDATE receipts SET status = 'approved', amount = ?, reward_granted = ? WHERE id = ?");
-                if ($stmt) $stmt->execute([$amount, $rewardGranted, $receiptId]);
-
-                $mode = 'points'; try { $mode = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'system_mode'")->fetchColumn() ?: 'points'; } catch(Throwable $e){}
-                
-                if ($mode === 'stamps') {
-                    $stmtAdd = $pdo->prepare("UPDATE users SET stamps = LEAST(10, stamps + ?) WHERE id = ?");
-                    if ($stmtAdd) $stmtAdd->execute([$rewardGranted, $receipt['user_id']]);
-                } else {
-                    $stmtAdd = $pdo->prepare("UPDATE users SET points = points + ? WHERE id = ?");
-                    if ($stmtAdd) $stmtAdd->execute([$rewardGranted, $receipt['user_id']]);
-                }
-                echo json_encode_safe(['success' => true, 'message' => '收據已核准，獎勵已發放']);
-            } else {
-                $stmt = $pdo->prepare("UPDATE receipts SET status = 'rejected' WHERE id = ?");
-                if ($stmt) $stmt->execute([$receiptId]);
-                echo json_encode_safe(['success' => true, 'message' => '收據已被駁回']);
-            }
+            echo json_encode_safe(['success' => false, 'message' => '收據審核功能已關閉 / Receipt review is disabled']);
             break;
 
         case 'admin_process_task':
@@ -781,7 +977,7 @@ try {
             $status = $_POST['status'] ?? 'rejected';
             $rewardGranted = intval($_POST['reward_granted'] ?? 0);
             
-            $stmtT = $pdo->prepare("SELECT t.*, u.name as member_name, c.name_zh as task_name, c.reward_type FROM user_tasks t JOIN users u ON t.user_id = u.id LEFT JOIN tasks_config c ON t.task_type = c.id WHERE t.id = ?");
+            $stmtT = $pdo->prepare("SELECT t.*, u.name as member_name, c.name_zh as task_name, c.reward_type, c.reward_amount FROM user_tasks t JOIN users u ON t.user_id = u.id LEFT JOIN tasks_config c ON t.task_type = c.id WHERE t.id = ?");
             if ($stmtT && $stmtT->execute([$taskId])) {
                 $task = $stmtT->fetch();
             } else { $task = false; }
@@ -796,6 +992,9 @@ try {
                 if ($rewardType === 'stamps') {
                     $stmtAdd = $pdo->prepare("UPDATE users SET stamps = LEAST(10, stamps + ?) WHERE id = ?");
                     if ($stmtAdd) $stmtAdd->execute([$rewardGranted, $task['user_id']]);
+                } elseif ($rewardType === 'spins') {
+                    $stmtAdd = $pdo->prepare("UPDATE users SET spins = spins + ? WHERE id = ?");
+                    if ($stmtAdd) $stmtAdd->execute([$rewardGranted, $task['user_id']]);
                 } else {
                     $stmtAdd = $pdo->prepare("UPDATE users SET points = points + ? WHERE id = ?");
                     if ($stmtAdd) $stmtAdd->execute([$rewardGranted, $task['user_id']]);
@@ -809,14 +1008,20 @@ try {
             break;
 
         case 'admin_add_task_config':
-            $name_zh = trim($_POST['name_zh'] ?? ''); $desc_zh = trim($_POST['desc_zh'] ?? ''); $type = trim($_POST['type'] ?? 'points'); $amount = intval($_POST['amount'] ?? 0);
+            $name_zh = trim($_POST['name_zh'] ?? ''); 
+            $desc_zh = trim($_POST['desc_zh'] ?? ''); 
+            $reward_type = trim($_POST['reward_type'] ?? $_POST['type'] ?? 'points'); 
+            $reward_amount = intval($_POST['reward_amount'] ?? $_POST['amount'] ?? 0);
+            $task_type = trim($_POST['task_type'] ?? 'manual');
+            $target_value = intval($_POST['target_value'] ?? 0);
+
             $stmtCheck = $pdo->prepare("SELECT COUNT(*) FROM tasks_config WHERE name_zh = ? AND reward_type = ?"); 
-            if ($stmtCheck && $stmtCheck->execute([$name_zh, $type])) {
+            if ($stmtCheck && $stmtCheck->execute([$name_zh, $reward_type])) {
                 if ($stmtCheck->fetchColumn() > 0) { echo json_encode_safe(['success' => false, 'message' => '此模式下已存在同名任務']); exit; }
             }
 
-            $stmt = $pdo->prepare("INSERT INTO tasks_config (name_zh, name_en, desc_zh, desc_en, reward_type, reward_amount) VALUES (?, ?, ?, ?, ?, ?)");
-            if ($stmt && $stmt->execute([$name_zh, $name_zh, $desc_zh, $desc_zh, $type, $amount])) {
+            $stmt = $pdo->prepare("INSERT INTO tasks_config (name_zh, name_en, desc_zh, desc_en, reward_type, reward_amount, task_type, target_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            if ($stmt && $stmt->execute([$name_zh, $name_zh, $desc_zh, $desc_zh, $reward_type, $reward_amount, $task_type, $target_value])) {
                 echo json_encode_safe(['success' => true, 'message' => '新增任務成功']);
             } else {
                 echo json_encode_safe(['success' => false, 'message' => '寫入失敗']);
@@ -870,17 +1075,23 @@ try {
             break;
 
         case 'admin_update_voucher_code':
-            $voucherId = intval($_POST['voucher_id'] ?? 0); $code = trim($_POST['code'] ?? '');
+            $voucherId = intval($_POST['voucher_id'] ?? 0); 
+            $code = trim($_POST['code'] ?? '');
+            $expiry = trim($_POST['expiry_date'] ?? '');
             if (empty($code)) { echo json_encode_safe(['success' => false, 'message' => '優惠券代碼不能為空']); exit; }
+            if (empty($expiry)) { echo json_encode_safe(['success' => false, 'message' => '到期日不能為空']); exit; }
             
             $stmtCheck = $pdo->prepare("SELECT COUNT(*) FROM vouchers WHERE code = ? AND id != ?"); 
             if ($stmtCheck && $stmtCheck->execute([$code, $voucherId])) {
                 if ($stmtCheck->fetchColumn() > 0) { echo json_encode_safe(['success' => false, 'message' => '此代碼已被使用']); exit; }
             }
             
-            $stmt = $pdo->prepare("UPDATE vouchers SET code = ? WHERE id = ?");
-            if ($stmt) $stmt->execute([$code, $voucherId]);
-            echo json_encode_safe(['success' => true, 'message' => '代碼已成功更新']);
+            $stmt = $pdo->prepare("UPDATE vouchers SET code = ?, expiry_date = ? WHERE id = ?");
+            if ($stmt && $stmt->execute([$code, $expiry, $voucherId])) {
+                echo json_encode_safe(['success' => true, 'message' => '卡券資料已成功更新']);
+            } else {
+                echo json_encode_safe(['success' => false, 'message' => '更新失敗']);
+            }
             break;
 
         case 'admin_add_wheel':

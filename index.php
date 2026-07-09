@@ -496,7 +496,7 @@ session_start();
                   <input type="password" id="loginPassword" required placeholder="••••••••" autocomplete="current-password">
                 </div>
                 <button type="submit" class="btn btn-primary btn-block" style="border-radius: 100px; margin-top: 8px;" id="loginBtnMain" data-i18n-zh="密碼登入" data-i18n-en="Sign In with Password">密碼登入</button>
-                <button type="button" class="btn btn-outline btn-block" style="border-radius: 100px; margin-top: 10px;" onclick="triggerBiometricAuth('login')" data-i18n-zh="⚡ 生物辨識 Face ID 登入" data-i18n-en="⚡ Biometric FaceID Login">⚡ 生物辨識 Face ID 登入</button>
+                <button type="button" class="btn btn-outline btn-block" id="bioLoginBtn" style="border-radius: 100px; margin-top: 10px;" onclick="triggerBiometricAuth('login')" data-i18n-zh="⚡ 生物辨識 Face ID 登入" data-i18n-en="⚡ Biometric FaceID Login">⚡ 生物辨識 Face ID 登入</button>
             </div>
             
             <div id="loginStepOtp" style="display:none; text-align:left; margin-top:10px;">
@@ -558,7 +558,7 @@ session_start();
                 <label data-i18n-zh="確認密碼" data-i18n-en="Confirm Password">確認密碼</label>
                 <input type="password" id="regConfirmPassword" required placeholder="再次輸入密碼">
               </div>
-              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding: 0 4px;">
+              <div id="regBiometricRow" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding: 0 4px;">
                 <span style="font-size: 13px;" data-i18n-zh="啟用生物辨識登入" data-i18n-en="Enable Biometric Login">啟用生物辨識登入</span>
                 <label class="switch"><input type="checkbox" id="regBiometric" checked><span class="track"></span><span class="thumb"></span></label>
               </div>
@@ -742,7 +742,7 @@ session_start();
             </div>
 
             <div class="card">
-              <div class="settings-row">
+              <div class="settings-row" id="profileBiometricRow">
                 <div class="s-ic">🙂</div>
                 <div class="s-label" data-i18n-zh="生物辨識登入" data-i18n-en="Biometric Login">生物辨識登入</div>
                 <label class="switch"><input type="checkbox" id="toggleBiometric" onchange="toggleBiometricSetting()"><span class="track"></span><span class="thumb"></span></label>
@@ -751,6 +751,14 @@ session_start();
                 <div class="s-ic">🔔</div>
                 <div class="s-label" data-i18n-zh="通知設定" data-i18n-en="Notifications">通知設定</div>
                 <label class="switch"><input type="checkbox" checked><span class="track"></span><span class="thumb"></span></label>
+              </div>
+            </div>
+
+            <!-- Verification Status Card -->
+            <div class="card" id="profileVerificationCard" style="padding: 16px 20px; display: none;">
+              <h3 style="font-size: 14px; margin-bottom: 12px; font-weight:600; text-align: left;" data-i18n-zh="安全與帳戶驗證" data-i18n-en="Account Verification">安全與帳戶驗證</h3>
+              <div id="profileVerifyContainer" style="display:flex; flex-direction:column; gap:12px; text-align: left;">
+                <!-- Dynamic verification items -->
               </div>
             </div>
 
@@ -853,8 +861,12 @@ session_start();
         <option value="男" data-i18n-zh="男" data-i18n-en="Male">男</option>
       </select>
     </div>
+    <div class="form-field">
+      <label data-i18n-zh="手機號碼" data-i18n-en="Phone">手機號碼</label>
+      <input type="text" id="editPhoneInput" placeholder="例如: 0912345678">
+    </div>
     <div class="form-field" style="margin-bottom:22px;">
-      <label data-i18n-zh="電郵（選填）" data-i18n-en="Email (optional)">電郵（選填）</label>
+      <label data-i18n-zh="電郵" data-i18n-en="Email">電郵</label>
       <input type="email" id="editEmailInput" placeholder="you@example.com">
     </div>
     <button class="btn btn-primary btn-block" style="border-radius:100px;" onclick="saveProfile()" data-i18n-zh="儲存變更" data-i18n-en="Save Changes">儲存變更</button>
@@ -944,8 +956,196 @@ session_start();
       }, 1000);
   }
 
+  function applyBiometricSettings() {
+      const settings = (fullData && fullData.settings) || publicSettings || {};
+      const bioEnabled = parseInt(settings.biometric_login_enabled ?? 0) === 1;
+      
+      const bioLoginBtn = document.getElementById('bioLoginBtn');
+      if (bioLoginBtn) {
+          bioLoginBtn.style.display = bioEnabled ? 'block' : 'none';
+      }
+      
+      const regBiometricRow = document.getElementById('regBiometricRow');
+      if (regBiometricRow) {
+          regBiometricRow.style.display = bioEnabled ? 'flex' : 'none';
+      }
+      
+      const profileBiometricRow = document.getElementById('profileBiometricRow');
+      if (profileBiometricRow) {
+          profileBiometricRow.style.display = bioEnabled ? 'flex' : 'none';
+      }
+  }
+
+  async function sendProfileVerifyOtp(type) {
+    const inputId = type === 'phone' ? 'verifyPhoneInput' : 'verifyEmailInput';
+    const value = document.getElementById(inputId).value.trim();
+    const btnId = type === 'phone' ? 'btnSendPhoneVerify' : 'btnSendEmailVerify';
+    
+    if (!value) {
+      showToast(type === 'phone' ? '請輸入手機號碼' : '請輸入電子信箱');
+      return;
+    }
+
+    const form = new FormData();
+    form.append('type', type);
+    form.append('value', value);
+
+    const btn = document.getElementById(btnId);
+    btn.disabled = true;
+
+    try {
+      const res = await fetch('api.php?action=send_profile_verify_otp', {
+        method: 'POST',
+        body: form
+      });
+      const data = await res.json();
+      showToast(data.message);
+      if (data.success) {
+        const otpRowId = type === 'phone' ? 'verifyPhoneOtpRow' : 'verifyEmailOtpRow';
+        document.getElementById(otpRowId).style.display = 'flex';
+        startOtpCooldown(btnId);
+      } else {
+        btn.disabled = false;
+      }
+    } catch (e) {
+      showToast('發送失敗，請重試 / Failed to send OTP');
+      btn.disabled = false;
+    }
+  }
+
+  async function submitProfileVerify(type) {
+    const otpInputId = type === 'phone' ? 'verifyPhoneOtpInput' : 'verifyEmailOtpInput';
+    const otp = document.getElementById(otpInputId).value.trim();
+    if (!otp) {
+      showToast('請輸入驗證碼');
+      return;
+    }
+
+    const form = new FormData();
+    form.append('otp', otp);
+
+    try {
+      const res = await fetch('api.php?action=verify_profile_contact', {
+        method: 'POST',
+        body: form
+      });
+      const data = await res.json();
+      showToast(data.message);
+      if (data.success) {
+        loadUserData(); // Reload user data and refresh UI verification statuses!
+      }
+    } catch (e) {
+      showToast('驗證失敗，請重試 / Verification failed');
+    }
+  }
+
+  function renderVerificationPerks() {
+    const card = document.getElementById('profileVerificationCard');
+    const container = document.getElementById('profileVerifyContainer');
+    if (!card || !container) return;
+    
+    container.innerHTML = '';
+    
+    const settings = (fullData && fullData.settings) || publicSettings || {};
+    const otpEnabled = settings.otp_enabled == '1';
+    const method = settings.otp_method || 'both';
+
+    // Verification is available if:
+    // 1. OTP is enabled in admin settings
+    // 2. OR the user has at least one verified contact details (we show their verified status)
+    const hasVerified = (userData.phone_verified == 1 || userData.email_verified == 1);
+    if (!otpEnabled && !hasVerified) {
+      card.style.display = 'none';
+      return;
+    }
+
+    card.style.display = 'block';
+
+    // Show Phone Row if phone is verified, or if OTP is enabled and (method is 'phone' or 'both' or the user has verified email)
+    const showPhone = (userData.phone_verified == 1) || (otpEnabled && (method === 'phone' || method === 'both' || userData.email_verified == 1));
+
+    // Show Email Row if email is verified, or if OTP is enabled and (method is 'email' or 'both' or the user has verified phone)
+    const showEmail = (userData.email_verified == 1) || (otpEnabled && (method === 'email' || method === 'both' || userData.phone_verified == 1));
+
+    if (showPhone) {
+      const phoneRow = document.createElement('div');
+      phoneRow.style.borderBottom = showEmail ? '1px solid var(--line)' : 'none';
+      phoneRow.style.paddingBottom = showEmail ? '12px' : '0';
+      phoneRow.style.marginBottom = showEmail ? '12px' : '0';
+      
+      if (userData.phone_verified == 1) {
+        phoneRow.innerHTML = `
+          <div style="display:flex; align-items:center; justify-content:space-between; font-size:13px;">
+            <div>
+              <span style="font-weight:600;">手機號碼 (Phone)</span>
+              <div style="color:var(--ink-soft); margin-top:2px;">${userData.phone || ''}</div>
+            </div>
+            <span style="color:var(--ok); font-weight:600; font-size:12px;">🟢 已驗證</span>
+          </div>
+        `;
+      } else {
+        phoneRow.innerHTML = `
+          <div style="font-size:13px;">
+            <div style="display:flex; align-items:center; justify-content:space-between;">
+              <span style="font-weight:600;">手機號碼 (Phone)</span>
+              <span style="color:var(--warn); font-size:11px; font-weight:500;">⚠️ 未驗證</span>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:8px;">
+              <input type="text" id="verifyPhoneInput" value="${userData.phone || ''}" placeholder="輸入手機號碼" style="flex:1; padding:8px 12px; font-size:12.5px; border:1px solid var(--line); border-radius:100px; background:var(--page);">
+              <button class="btn btn-outline btn-sm" onclick="sendProfileVerifyOtp('phone')" id="btnSendPhoneVerify" style="padding:0 14px; font-size:11.5px; border-radius:100px; white-space:nowrap; margin:0;">發送驗證碼</button>
+            </div>
+            <div id="verifyPhoneOtpRow" style="display:none; gap:8px; margin-top:8px;">
+              <input type="text" id="verifyPhoneOtpInput" placeholder="輸入6位數驗證碼" style="flex:1; padding:8px 12px; font-size:12.5px; border:1px solid var(--line); border-radius:100px; background:var(--page);">
+              <button class="btn btn-primary btn-sm" onclick="submitProfileVerify('phone')" style="padding:0 16px; font-size:11.5px; background:var(--ok); border-radius:100px; white-space:nowrap; margin:0;">驗證</button>
+            </div>
+          </div>
+        `;
+      }
+      container.appendChild(phoneRow);
+    }
+
+    if (showEmail) {
+      const emailRow = document.createElement('div');
+      
+      if (userData.email_verified == 1) {
+        emailRow.innerHTML = `
+          <div style="display:flex; align-items:center; justify-content:space-between; font-size:13px;">
+            <div>
+              <span style="font-weight:600;">電子信箱 (Email)</span>
+              <div style="color:var(--ink-soft); margin-top:2px;">${userData.email || ''}</div>
+            </div>
+            <span style="color:var(--ok); font-weight:600; font-size:12px;">🟢 已驗證</span>
+          </div>
+        `;
+      } else {
+        emailRow.innerHTML = `
+          <div style="font-size:13px;">
+            <div style="display:flex; align-items:center; justify-content:space-between;">
+              <span style="font-weight:600;">電子信箱 (Email)</span>
+              <span style="color:var(--warn); font-size:11px; font-weight:500;">⚠️ 未驗證</span>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:8px;">
+              <input type="text" id="verifyEmailInput" value="${userData.email || ''}" placeholder="輸入電子信箱" style="flex:1; padding:8px 12px; font-size:12.5px; border:1px solid var(--line); border-radius:100px; background:var(--page);">
+              <button class="btn btn-outline btn-sm" onclick="sendProfileVerifyOtp('email')" id="btnSendEmailVerify" style="padding:0 14px; font-size:11.5px; border-radius:100px; white-space:nowrap; margin:0;">發送驗證碼</button>
+            </div>
+            <div id="verifyEmailOtpRow" style="display:none; gap:8px; margin-top:8px;">
+              <input type="text" id="verifyEmailOtpInput" placeholder="輸入6位數驗證碼" style="flex:1; padding:8px 12px; font-size:12.5px; border:1px solid var(--line); border-radius:100px; background:var(--page);">
+              <button class="btn btn-primary btn-sm" onclick="submitProfileVerify('email')" style="padding:0 16px; font-size:11.5px; background:var(--ok); border-radius:100px; white-space:nowrap; margin:0;">驗證</button>
+            </div>
+          </div>
+        `;
+      }
+      container.appendChild(emailRow);
+    }
+
+    if (container.children.length === 0) {
+      card.style.display = 'none';
+    }
+  }
+
   // Set up auth UI based on OTP setting
   function setupAuthUI() {
+      applyBiometricSettings();
       isOtpRequiredForReg = (publicSettings.otp_enabled == '1');
       const method = publicSettings.otp_method || 'both';
       
@@ -1289,6 +1489,7 @@ session_start();
     // Dynamically check system_mode to replace 'loyalty' with either points or stamp system tab id
     barList.forEach(tab => {
       if (!tab.visible) return;
+      if (tab.id === 'scan') return;
       
       let tabId = tab.id;
       // Map loyalty to either stamps or loyalty points mode
@@ -1427,12 +1628,46 @@ session_start();
     // Setup input fields for Edit Profile
     document.getElementById('editNameInput').value = userData.name;
     document.getElementById('editGenderInput').value = userData.gender;
-    document.getElementById('editEmailInput').value = userData.email || '';
+    
+    const editPhone = document.getElementById('editPhoneInput');
+    if (editPhone) {
+      editPhone.value = userData.phone || '';
+      if (userData.phone_verified == 1) {
+        editPhone.readOnly = true;
+        editPhone.style.background = '#f4f1ea';
+        editPhone.style.color = '#8e8a82';
+        editPhone.style.cursor = 'not-allowed';
+      } else {
+        editPhone.readOnly = false;
+        editPhone.style.background = '';
+        editPhone.style.color = '';
+        editPhone.style.cursor = '';
+      }
+    }
+
+    const editEmail = document.getElementById('editEmailInput');
+    if (editEmail) {
+      editEmail.value = userData.email || '';
+      if (userData.email_verified == 1) {
+        editEmail.readOnly = true;
+        editEmail.style.background = '#f4f1ea';
+        editEmail.style.color = '#8e8a82';
+        editEmail.style.cursor = 'not-allowed';
+      } else {
+        editEmail.readOnly = false;
+        editEmail.style.background = '';
+        editEmail.style.color = '';
+        editEmail.style.cursor = '';
+      }
+    }
     
     document.getElementById('toggleBiometric').checked = userData.biometric_enabled == 1;
 
     // Render wheel prizes list inside draw tab
     renderWheelPrizesList();
+
+    // Render account verification cards
+    renderVerificationPerks();
   }
 
   function renderTierList(currentTier) {
@@ -1627,8 +1862,9 @@ session_start();
       return;
     }
 
-    // Build wheel visual segments
-    const deg = 360 / wheelPrizes.length;
+    // Build wheel visual segments proportioned by weights
+    const totalWeight = wheelPrizes.reduce((sum, p) => sum + parseInt(p.weight || 0, 10), 0);
+    let startAngle = 0;
     let cssGradients = [];
     const defaultColors = ['#788A6E', '#C4A47C', '#8C9CA6', '#5C6B54', '#A38561', '#D4C5B0'];
 
@@ -1641,15 +1877,21 @@ session_start();
       chip.textContent = name;
       listEl.appendChild(chip);
 
+      const weightVal = parseInt(p.weight || 0, 10);
+      const segmentAngle = totalWeight > 0 ? (weightVal / totalWeight) * 360 : (360 / wheelPrizes.length);
+      const centerAngle = startAngle + (segmentAngle / 2);
+
       // Canvas element styling helper or pie slice (using rotation css)
       const labelDiv = document.createElement('div');
       labelDiv.className = 'wheel-label';
-      labelDiv.style.transform = `rotate(${idx * deg}deg) translateY(-94px)`;
+      labelDiv.style.transform = `rotate(${centerAngle}deg) translateY(-94px)`;
       labelDiv.textContent = name;
       labelsContainer.appendChild(labelDiv);
 
       const color = p.color || defaultColors[idx % defaultColors.length];
-      cssGradients.push(`${color} ${idx * deg}deg ${(idx + 1) * deg}deg`);
+      cssGradients.push(`${color} ${startAngle}deg ${startAngle + segmentAngle}deg`);
+
+      startAngle += segmentAngle;
     });
 
     // Apply color pie slice background to the wheel
@@ -1675,14 +1917,26 @@ session_start();
 
       if (data.success) {
         const winningIndex = data.winningIndex;
-        const totalPrizeCount = wheelPrizes.length;
-        const segmentDeg = 360 / totalPrizeCount;
         
-        // Calculate target rotation degree.
-        // We spin multiple full rounds (e.g. 5 rounds = 1800deg) and align on the winning slice.
-        // The pointer is at the top (0deg). A slice starts at winningIndex * segmentDeg.
-        // To align pointer with winning index, we rotate wheel by: 360 - (winningIndex * segmentDeg) - (segmentDeg/2)
-        const targetSliceDeg = 360 - (winningIndex * segmentDeg) - (segmentDeg / 2);
+        // Find starting and ending angles of the winning segment based on weights
+        let accumAngle = 0;
+        const totalWeight = wheelPrizes.reduce((sum, p) => sum + parseInt(p.weight || 0, 10), 0);
+        let winningStartAngle = 0;
+        let winningSegmentAngle = 0;
+
+        wheelPrizes.forEach((p, idx) => {
+          const weightVal = parseInt(p.weight || 0, 10);
+          const segmentAngle = totalWeight > 0 ? (weightVal / totalWeight) * 360 : (360 / wheelPrizes.length);
+          if (idx === winningIndex) {
+            winningStartAngle = accumAngle;
+            winningSegmentAngle = segmentAngle;
+          }
+          accumAngle += segmentAngle;
+        });
+
+        // To align top pointer (0deg) with center of winning segment
+        const centerAngle = winningStartAngle + (winningSegmentAngle / 2);
+        const targetSliceDeg = 360 - centerAngle;
         const finalRotation = 1800 + targetSliceDeg; // 5 full spins + slice offset
 
         const wheel = document.getElementById('wheel');
@@ -1848,6 +2102,7 @@ session_start();
   async function saveProfile() {
     const name = document.getElementById('editNameInput').value.trim();
     const gender = document.getElementById('editGenderInput').value;
+    const phone = document.getElementById('editPhoneInput').value.trim();
     const email = document.getElementById('editEmailInput').value.trim();
 
     if (!name) {
@@ -1858,6 +2113,7 @@ session_start();
     const form = new FormData();
     form.append('name', name);
     form.append('gender', gender);
+    form.append('phone', phone);
     form.append('email', email);
 
     try {
